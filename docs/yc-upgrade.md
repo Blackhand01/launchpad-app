@@ -1,6 +1,6 @@
 You are a senior staff engineer working on a startup idea validation platform.
 
-Your goal is to upgrade the existing validator system into a YC-grade decision engine.
+Your goal is to upgrade the existing validator system into a robust decision engine.
 
 The current system:
 - Takes a product blueprint
@@ -111,7 +111,7 @@ Show:
 
 - Vision (long-term potential)
 - Real Feasibility (after dependency penalty)
-- YC Verdict (BIG label)
+- Final Verdict (BIG label)
 
 Add color logic:
 
@@ -128,7 +128,7 @@ Store:
 - blueprint
 - raw scores
 - adjusted scores
-- verdict
+- yc_verdict
 
 So we can later analyze:
 - false positives
@@ -150,15 +150,15 @@ Add unit tests:
 
 Case 1: Social app (no infra)
 → dependency < 20
-→ verdict BUILD
+→ yc_verdict BUILD
 
 Case 2: Skipass BLE system
 → dependency > 70
-→ verdict NOT NOW
+→ yc_verdict NOT NOW
 
 Case 3: AI analytics app (webcam + meteo)
 → dependency ~30
-→ verdict BUILD
+→ yc_verdict BUILD
 
 ---
 

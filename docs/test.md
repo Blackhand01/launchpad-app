@@ -1,4 +1,4 @@
-Perfetto. Qui hai una **batteria di test seria (YC-style)**: 10 idee famose descritte **come se fossero al giorno 0**, senza spoiler di successo.
+Perfetto. Qui hai una **batteria di test seria (Launchpad-style)**: 10 idee famose descritte **come se fossero al giorno 0**, senza spoiler di successo.
 
 👉 L’obiettivo: vedere se il tuo validator distingue davvero tra
 
@@ -45,8 +45,6 @@ Una piattaforma online per studenti universitari dove creare un profilo personal
 ```text
 Un sito dove persone possono affittare un letto o una stanza a sconosciuti per brevi periodi, inizialmente durante eventi quando gli hotel sono pieni.
 ```
-
-([Charisol][1])
 
 **Expected:**
 
@@ -96,15 +94,13 @@ Un sistema per accettare pagamenti online facilmente tramite API, eliminando la 
 Un software che sincronizza automaticamente file tra computer e cloud, rendendoli accessibili ovunque senza chiavette USB.
 ```
 
-([Charisol][1])
-
 **Expected:**
 
 * Vision: alta
 * Feasibility: alta
 * Verdict: BUILD
 
-👉 Perfetto esempio YC: demo semplice → valore immediato.
+👉 Perfetto esempio: demo semplice → valore immediato.
 
 ---
 
@@ -190,7 +186,7 @@ Un’app che aggrega dati da webcam, meteo e GPS per stimare probabilisticamente
 * Feasibility: alta
 * Verdict: BUILD
 
-👉 Nessuna dipendenza → perfetto YC.
+👉 Nessuna dipendenza → perfetto per Launchpad.
 
 ---
 
@@ -248,7 +244,7 @@ Questa batteria testa una cosa sola:
 > vs
 > **“idea che puoi iniziare domani”**
 
-YC investe solo nella seconda.
+Un sistema rigoroso investirebbe solo nella seconda.
 
 ---
 
@@ -287,7 +283,6 @@ Note:
 * richiede `OPENAI_API_KEY` nel tuo `.env`
 * usa il validator reale (`run_feasibility_validation`) e stampa tabella risultati
 
-[1]: https://charisol.io/10-famous-companies-that-came-out-of-y-combinator/?utm_source=chatgpt.com "10 Famous Companies That Came Out of Y Combinator - Charisol | End to End Product Development Services"
 [2]: https://en.wikipedia.org/wiki/Reddit?utm_source=chatgpt.com "Reddit"
 [3]: https://www.startuptoscaleup.com/resources/famous-startup-pivots/?utm_source=chatgpt.com "Famous Startup Pivots: Non-Linear Paths to Billion-Dollar Companies"
 [4]: https://en.wikipedia.org/wiki/Dylan_Field?utm_source=chatgpt.com "Dylan Field"

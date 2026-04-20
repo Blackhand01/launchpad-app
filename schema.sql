@@ -25,7 +25,6 @@ create table if not exists public.ideas (
   raw_transcript text,
   structured_data jsonb,
   analysis_report text,
-  verdict text check (verdict is null or verdict in ('GO', 'NO-GO', 'CAUTION')),
   status text not null default 'raw'
     check (status in ('raw', 'pending_confirmation', 'ready_for_validation', 'validated')),
   pivot_used boolean not null default false,
@@ -149,6 +148,7 @@ alter table public.ideas add column if not exists final_score numeric(6,2);
 alter table public.ideas add column if not exists yc_verdict text;
 alter table public.ideas add column if not exists thought_log jsonb;
 alter table public.ideas add column if not exists pivot_suggestion text;
+alter table public.ideas drop column if exists verdict;
 
 alter table public.ideas drop constraint if exists ideas_vision_score_range;
 alter table public.ideas add constraint ideas_vision_score_range
@@ -181,22 +181,36 @@ where dependency_score is null
   and feasibility_score is not null;
 
 update public.ideas
-set real_feasibility = greatest(0, least(100, feasibility_score - (dependency_score * 0.5)))
+set real_feasibility = greatest(
+  0,
+  least(
+    100,
+    feasibility_score
+    - (dependency_score * 0.30)
+    + greatest(0, (vision_score - 55) * 0.15)
+  )
+)
 where feasibility_score is not null
   and dependency_score is not null
   and real_feasibility is null;
 
 update public.ideas
-set final_score = greatest(0, least(100, vision_score * (real_feasibility / 100.0)))
+set final_score = greatest(
+  0,
+  least(
+    100,
+    (real_feasibility * 0.60) + (vision_score * 0.40)
+  )
+)
 where vision_score is not null
   and real_feasibility is not null
   and final_score is null;
 
 update public.ideas
 set yc_verdict = case
-  when real_feasibility < 40 then 'NOT NOW'
-  when real_feasibility < 60 then 'ITERATE'
-  else 'BUILD'
+  when final_score >= 70 and real_feasibility >= 50 then 'BUILD'
+  when final_score >= 45 or real_feasibility >= 38 then 'ITERATE'
+  else 'NOT NOW'
 end
 where yc_verdict is null
   and real_feasibility is not null;

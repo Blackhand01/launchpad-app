@@ -26,11 +26,12 @@ Usa la ricerca web quando utile per verificare limiti tecnici, API, policy e vin
 
 OBIETTIVO:
 Valutare se il prodotto è costruibile davvero oggi da un team piccolo, non solo se la tecnologia esiste.
+Non devi "stroncare" l'idea: devi spiegare come renderla testabile e lanciabile in modo progressivo.
 
 SCORING:
 - vision_score (0-100): potenziale lungo termine.
 - feasibility_score (0-100): costruibilità immediata da team piccolo.
-- dependency_score (0-100): dipendenza da terze parti.
+- dependency_score (0-100): rischio di dipendenza da terze parti.
   0 = totalmente indipendente.
   100 = totalmente dipendente da altri.
 
@@ -45,17 +46,17 @@ REGOLA FONDAMENTALE:
 Non confondere "la tecnologia esiste" con "il prodotto è lanciabile dal team".
 Do NOT treat existing solutions as proof of feasibility unless the team can build them without permission.
 
-HARD CONSTRAINTS (OBBLIGATORIE):
-- Se serve infrastruttura esterna: dependency_score >= 70
-- Se servono accordi commerciali: dependency_score >= 80
-- Se non può partire standalone: feasibility_score <= 40
+VALUTAZIONE COSTRUTTIVA:
+- Se ci sono blocchi esterni, penalizza ma proponi una versione MVP che possa partire senza quei blocchi.
+- Se il percorso è lento, descrivi il primo esperimento utile in 7 giorni.
+- Evita giudizi assoluti senza piano di rilancio pratico.
 
 SPEED CHECK (OBBLIGATORIO):
 Nel reasoning aggiungi SEMPRE sezione "## Speed Check" e valuta:
 - Può essere testato in < 7 giorni?
 - Il primo utente riceve valore subito?
 - Richiede deployment/integrazione lunga?
-Se è lento, abbassa feasibility_score di almeno 20 punti.
+Se è lento, riduci feasibility_score in modo proporzionato e spiega perché.
 
 OUTPUT:
 Restituisci SOLO JSON valido con chiavi esatte:
@@ -370,22 +371,21 @@ def _safe_validation_fallback(blueprint: dict[str, Any]) -> dict[str, Any]:
         dependency = 75
     feasibility = 60 if dependency <= 50 else 35
     vision = 65
-    yc = "BUILD" if feasibility - (dependency * 0.5) >= 60 else "ITERATE"
-    if feasibility - (dependency * 0.5) < 40:
-        yc = "NOT NOW"
+    decision = compute_yc_decision(vision, feasibility, dependency)
     reasoning = (
         "## Physics Check\n"
         "Fallback automatico: non è stato possibile ottenere JSON valido dal modello.\n\n"
         "## Control Check\n"
-        "Valutazione conservativa applicata in base al testo del blueprint e alla dipendenza stimata.\n\n"
+        "Valutazione prudente applicata in base al testo del blueprint e alla dipendenza stimata.\n\n"
         "## Speed Check\n"
-        "Assunto scenario medio: se servono integrazioni esterne la fattibilità viene ridotta."
+        "Assunto scenario medio: se servono integrazioni esterne la fattibilità viene ridotta, "
+        "ma resta suggerito un test MVP standalone."
     )
     return {
         "vision_score": vision,
         "feasibility_score": feasibility,
         "dependency_score": dependency,
-        "yc_verdict": yc,
+        "yc_verdict": str(decision["yc_verdict"]),
         "reasoning": reasoning,
         "pivot_suggestion": "Costruisci una MVP standalone in 14 giorni senza integrazioni bloccanti.",
     }
@@ -426,20 +426,12 @@ def _urls_in_text(text: str) -> list[dict[str, str]]:
     return out[:25]
 
 
-def _yc_verdict_from_real_feasibility(real_feasibility: float) -> str:
-    if real_feasibility < 40:
-        return "NOT NOW"
-    if real_feasibility < 60:
+def _yc_verdict_from_scores(real_feasibility: float, final_score: float) -> str:
+    if final_score >= 70 and real_feasibility >= 50:
+        return "BUILD"
+    if final_score >= 45 or real_feasibility >= 38:
         return "ITERATE"
-    return "BUILD"
-
-
-def _legacy_verdict_from_yc(yc_verdict: str) -> str:
-    if yc_verdict == "BUILD":
-        return "GO"
-    if yc_verdict == "ITERATE":
-        return "CAUTION"
-    return "NO-GO"
+    return "NOT NOW"
 
 
 def _clamp_0_100(value: int) -> int:
@@ -451,22 +443,24 @@ def compute_yc_decision(
     feasibility_score: int,
     dependency_score: int | None,
 ) -> dict[str, float | int | str]:
-    """Deterministic YC-grade scoring used by runtime and tests."""
+    """Deterministic scoring tuned for coaching and actionability in Launchpad."""
     vision = _clamp_0_100(vision_score)
     feasibility = _clamp_0_100(feasibility_score)
     dependency = 50 if dependency_score is None else _clamp_0_100(dependency_score)
-    real_feasibility = round(max(0.0, min(100.0, feasibility - (dependency * 0.5))), 1)
-    final_score = round(max(0.0, min(100.0, vision * (real_feasibility / 100.0))), 1)
-    yc_verdict = _yc_verdict_from_real_feasibility(real_feasibility)
-    legacy_verdict = _legacy_verdict_from_yc(yc_verdict)
+    dependency_penalty = round(dependency * 0.30, 1)
+    vision_bonus = round(max(0.0, (vision - 55) * 0.15), 1)
+    real_feasibility = round(max(0.0, min(100.0, feasibility - dependency_penalty + vision_bonus)), 1)
+    final_score = round(max(0.0, min(100.0, (real_feasibility * 0.6) + (vision * 0.4))), 1)
+    yc_verdict = _yc_verdict_from_scores(real_feasibility, final_score)
     return {
         "vision_score": vision,
         "feasibility_score": feasibility,
         "dependency_score": dependency,
+        "dependency_penalty": dependency_penalty,
+        "vision_bonus": vision_bonus,
         "real_feasibility": real_feasibility,
         "final_score": final_score,
         "yc_verdict": yc_verdict,
-        "legacy_verdict": legacy_verdict,
     }
 
 
@@ -476,8 +470,7 @@ def run_feasibility_validation(
     status_writer: Callable[[str], None] | None = None,
 ) -> dict[str, Any]:
     """
-    Phase 2: web-backed validation. Returns dict with YC scoring fields plus
-    legacy compatibility keys.
+    Phase 2: web-backed validation. Returns dict with scoring fields.
     """
     client = _openai()
     model = os.getenv("OPENAI_VALIDATION_MODEL", "gpt-5")
@@ -615,10 +608,11 @@ def run_feasibility_validation(
     vision = int(decision["vision_score"])
     feasibility = int(decision["feasibility_score"])
     dependency = int(decision["dependency_score"])
+    dependency_penalty = float(decision["dependency_penalty"])
+    vision_bonus = float(decision["vision_bonus"])
     real_feasibility = float(decision["real_feasibility"])
     final_score = float(decision["final_score"])
     yc_verdict = str(decision["yc_verdict"])
-    legacy_verdict = str(decision["legacy_verdict"])
 
     reasoning = str(data.get("reasoning") or data.get("sandwich_report") or "").strip()
     pivot = str(data.get("pivot_suggestion", "")).strip()
@@ -648,12 +642,13 @@ def run_feasibility_validation(
             "dependency_score": dependency,
         },
         "adjusted_scores": {
+            "dependency_penalty": dependency_penalty,
+            "vision_bonus": vision_bonus,
             "real_feasibility": real_feasibility,
             "final_score": final_score,
         },
         "verdicts": {
             "yc_verdict": yc_verdict,
-            "legacy_verdict": legacy_verdict,
             "model_yc_verdict": model_yc_verdict,
             "model_verdict_matches_engine": model_yc_verdict == yc_verdict if model_yc_verdict else None,
         },
@@ -672,7 +667,6 @@ def run_feasibility_validation(
         "sandwich_report": reasoning,  # backward compatibility for existing UI calls
         "pivot_suggestion": pivot,
         "thought_log": thought_log,
-        "verdict": legacy_verdict,
     }
 
 

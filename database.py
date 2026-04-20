@@ -7,6 +7,8 @@ from typing import Any
 
 from supabase import Client, create_client
 
+import ai_engine
+
 
 class WeeklyQuotaReachedError(Exception):
     """Raised when create_idea_with_quota hits the user's weekly limit."""
@@ -159,7 +161,7 @@ def admin_reset_ideas_this_week(client: Client, target_user_id: str | None = Non
 
 
 def admin_hall_of_fame() -> list[dict[str, Any]]:
-    """Validated ideas sorted by YC final_score, includes author email."""
+    """Validated ideas sorted by final_score, includes author email."""
     client = service_supabase()
     try:
         res = (
@@ -191,13 +193,12 @@ def admin_hall_of_fame() -> list[dict[str, Any]]:
             for r in rows:
                 v = int(r.get("vision_score") or 0)
                 f = int(r.get("feasibility_score") or 0)
-                d = 50
-                rf = round(max(0.0, min(100.0, f - (d * 0.5))), 1)
-                final = round(max(0.0, min(100.0, v * (rf / 100.0))), 1)
+                d = 50 if r.get("dependency_score") is None else int(r.get("dependency_score"))
+                decision = ai_engine.compute_yc_decision(v, f, d)
                 r["dependency_score"] = d
-                r["real_feasibility"] = rf
-                r["final_score"] = final
-                r["yc_verdict"] = "BUILD" if rf >= 60 else ("ITERATE" if rf >= 40 else "NOT NOW")
+                r["real_feasibility"] = round(float(decision["real_feasibility"]), 1)
+                r["final_score"] = round(float(decision["final_score"]), 1)
+                r["yc_verdict"] = str(decision["yc_verdict"])
                 r["avg_score"] = round((v + f) / 2, 1)
             profiles = {p["id"]: p for p in admin_list_profiles()}
             for r in rows:
@@ -219,15 +220,11 @@ def admin_hall_of_fame() -> list[dict[str, Any]]:
         f = int(r.get("feasibility_score") or 0)
         d_raw = r.get("dependency_score")
         d = 50 if d_raw is None else int(d_raw)
-        rf_raw = r.get("real_feasibility")
-        rf = round(max(0.0, min(100.0, f - (d * 0.5))), 1) if rf_raw is None else round(float(rf_raw), 1)
-        final_raw = r.get("final_score")
-        final = round(max(0.0, min(100.0, v * (rf / 100.0))), 1) if final_raw is None else round(float(final_raw), 1)
+        decision = ai_engine.compute_yc_decision(v, f, d)
         r["dependency_score"] = d
-        r["real_feasibility"] = rf
-        r["final_score"] = final
-        if not r.get("yc_verdict"):
-            r["yc_verdict"] = "BUILD" if rf >= 60 else ("ITERATE" if rf >= 40 else "NOT NOW")
+        r["real_feasibility"] = round(float(decision["real_feasibility"]), 1)
+        r["final_score"] = round(float(decision["final_score"]), 1)
+        r["yc_verdict"] = str(decision["yc_verdict"])
         r["avg_score"] = round((v + f) / 2, 1)
     rows.sort(
         key=lambda r: (
