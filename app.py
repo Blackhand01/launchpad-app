@@ -34,6 +34,7 @@ div[data-testid="stTextInput"] input, div[data-testid="stTextArea"] textarea {
   min-height: 44px;
 }
 [data-testid="stTabs"] button {min-height: 44px;}
+div[data-testid="column"] .stButton > button {white-space: nowrap;}
 </style>
 """
 st.markdown(MOBILE_CSS, unsafe_allow_html=True)
@@ -243,8 +244,13 @@ def page_auth() -> bool:
 
     with tab_in:
         with st.form("form_signin", clear_on_submit=False):
-            st.text_input("Email", key="in_email")
-            st.text_input("Password", type="password", key="in_pw")
+            st.text_input("Email", key="in_email", autocomplete="email")
+            st.text_input(
+                "Password",
+                type="password",
+                key="in_pw",
+                autocomplete="current-password",
+            )
             submitted_in = st.form_submit_button("Entra")
         if submitted_in:
             email = (st.session_state.get("in_email") or "").strip()
@@ -272,8 +278,13 @@ def page_auth() -> bool:
 
     with tab_up:
         with st.form("form_signup", clear_on_submit=False):
-            st.text_input("Email", key="up_email")
-            st.text_input("Password", type="password", key="up_pw")
+            st.text_input("Email", key="up_email", autocomplete="email")
+            st.text_input(
+                "Password",
+                type="password",
+                key="up_pw",
+                autocomplete="new-password",
+            )
             submitted_up = st.form_submit_button("Crea account")
         if submitted_up:
             email = (st.session_state.get("up_email") or "").strip()
@@ -340,6 +351,41 @@ def _run_validation_for_idea(sb: Any, user_id: str, row: dict[str, Any]) -> None
     )
     st.success("Validazione completata.")
     st.rerun()
+
+
+def _render_nav_bar(profile: dict[str, Any], user_email: str) -> str:
+    pages = ["Console", "Nuova idea"]
+    if profile.get("is_admin"):
+        pages.append("Admin")
+
+    st.caption(f"Utente: {profile.get('email') or user_email}")
+    current = st.session_state.get("nav_page")
+    if current not in pages:
+        st.session_state["nav_page"] = pages[0]
+
+    nav_col, logout_col = st.columns((5, 2), gap="small")
+    with nav_col:
+        selected = st.segmented_control(
+            "Navigazione",
+            pages,
+            key="nav_page",
+            label_visibility="collapsed",
+            width="stretch",
+        )
+    with logout_col:
+        if st.button("Esci", key="nav_logout", use_container_width=True):
+            _sign_out()
+            st.rerun()
+
+    if selected not in pages:
+        st.session_state["nav_page"] = pages[0]
+        selected = pages[0]
+
+    if st.session_state.get("nav_page") != selected:
+        st.session_state["nav_page"] = selected
+
+    st.divider()
+    return str(selected)
 
 
 def page_console(sb: Any, user_id: str) -> None:
@@ -733,15 +779,7 @@ def main() -> None:
         page_pending()
         return
 
-    with st.sidebar:
-        st.markdown(f"**Utente:** {profile.get('email') or user.email}")
-        pages = ["Console", "Nuova idea"]
-        if profile.get("is_admin"):
-            pages.append("Admin")
-        nav = st.radio("Navigazione", pages, index=0)
-        if st.button("Esci"):
-            _sign_out()
-            st.rerun()
+    nav = _render_nav_bar(profile, user.email or "")
 
     if nav == "Console":
         page_console(sb, user.id)
