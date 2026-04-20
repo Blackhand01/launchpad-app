@@ -87,6 +87,17 @@ Dopo l'avvio, apri il browser su `http://localhost:8501` (Streamlit) o sulla por
 - Per modifiche rapide, attiva l'ambiente e avvia l'app in modalità sviluppo.
 - Controlla i log nella console per errori di connessione al DB o mancanza di dipendenze.
 
+## Scoring (Dettaglio Formule)
+
+Le formule di valutazione sono documentate qui (non mostrate in UI):
+
+- `dependency_penalty = dependency_score * 0.30`
+- `vision_bonus = max(0, (vision_score - 55) * 0.15)`
+- `real_feasibility = clamp(feasibility_score - dependency_penalty + vision_bonus, 0, 100)`
+- `final_score = clamp((real_feasibility * 0.60) + (vision_score * 0.40), 0, 100)`
+
+Dove `clamp(x, 0, 100)` limita il valore tra 0 e 100.
+
 ## Contribuire
 
 Apri una issue o invia una pull request con le modifiche proposte. Aggiungi test e aggiorna il README per nuovi comportamenti.

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import html
 import os
+import re
 from typing import Any
 
 import resend
@@ -124,14 +125,6 @@ def _require_env_for_ai() -> None:
         )
 
 
-def _score_band_label(score: int) -> str:
-    if score <= 39:
-        return "0–39 · da rafforzare"
-    if score <= 69:
-        return "40–69 · in crescita"
-    return "70–100 · solido"
-
-
 def _score_color(score: int) -> str:
     if score <= 39:
         return "#f59e0b"
@@ -140,22 +133,26 @@ def _score_color(score: int) -> str:
     return "#2e8b57"
 
 
-def _yc_verdict_color(verdict: str) -> str:
+def _normalize_outcome(verdict: str) -> str:
     v = str(verdict or "").strip().upper()
     if v == "BUILD":
-        return "#2e8b57"
+        return "GO"
     if v == "ITERATE":
-        return "#2d7ff9"
-    return "#f59e0b"
+        return "PIVOT"
+    if v in {"GO", "PIVOT", "CAUTION", "NOT NOW"}:
+        return v
+    return "NOT NOW"
 
 
-def _yc_verdict_copy(verdict: str) -> tuple[str, str]:
-    v = str(verdict or "").strip().upper()
-    if v == "BUILD":
-        return "BUILD", "Pronto per MVP: ora conta l'esecuzione."
-    if v == "ITERATE":
-        return "ITERATE", "Buona base: fai un giro rapido di iterazione e ritesta."
-    return "RIFOCALIZZA", "L'idea ha potenziale, ma va resa più semplice da lanciare ora."
+def _ui_outcome_copy(verdict: str) -> tuple[str, str, str]:
+    v = _normalize_outcome(verdict)
+    if v == "GO":
+        return "GO", "Lancio consigliato", "#50C878"
+    if v == "PIVOT":
+        return "PIVOT", "Idea valida, esecuzione da rivedere", "#FFD700"
+    if v == "CAUTION":
+        return "CAUTION", "Costruibile, ma poco appetibile", "#FF7F00"
+    return "NOT NOW", "Poche chance di successo ora", "#DC143C"
 
 
 def _compute_row_decision(row: dict[str, Any]) -> dict[str, float | int | str]:
@@ -163,7 +160,31 @@ def _compute_row_decision(row: dict[str, Any]) -> dict[str, float | int | str]:
     feasibility = int(row.get("feasibility_score") or 0)
     dependency_raw = row.get("dependency_score")
     dependency = 50 if dependency_raw is None else int(dependency_raw)
-    return ai_engine.compute_yc_decision(vision, feasibility, dependency)
+    computed = ai_engine.compute_yc_decision(vision, feasibility, dependency)
+    computed["yc_verdict"] = _normalize_outcome(str(computed.get("yc_verdict") or ""))
+    return computed
+
+
+def _legacy_storage_outcome(verdict: str) -> str:
+    v = _normalize_outcome(verdict)
+    if v == "GO":
+        return "BUILD"
+    if v in {"PIVOT", "CAUTION"}:
+        return "ITERATE"
+    return "NOT NOW"
+
+
+def _strip_pivot_from_analysis(report: str) -> str:
+    txt = str(report or "")
+    if not txt.strip():
+        return ""
+    pivot_heading = re.search(
+        r"(?im)^\s*(?:#{1,6}\s*)?(?:pivot suggestion|suggerimento pivot|piano pratico 14 giorni)\s*:?\s*$",
+        txt,
+    )
+    if not pivot_heading:
+        return txt
+    return txt[: pivot_heading.start()].rstrip()
 
 
 def _render_score_block(label: str, score: int) -> None:
@@ -178,7 +199,6 @@ def _render_score_block(label: str, score: int) -> None:
         ),
         unsafe_allow_html=True,
     )
-    st.caption(_score_band_label(score))
 
 
 def render_tabbed_report(row: dict[str, Any], *, read_only_caption: bool = False) -> None:
@@ -194,13 +214,10 @@ def render_tabbed_report(row: dict[str, Any], *, read_only_caption: bool = False
         else:
             decision = _compute_row_decision(row)
             yc_verdict = str(decision["yc_verdict"])
-            verdict_color = _yc_verdict_color(yc_verdict)
-            verdict_title, verdict_hint = _yc_verdict_copy(yc_verdict)
+            verdict_title, verdict_hint, verdict_color = _ui_outcome_copy(yc_verdict)
             vision_score = int(decision["vision_score"])
             raw_feasibility = int(decision["feasibility_score"])
             dependency_score = int(decision["dependency_score"])
-            dependency_penalty = float(decision["dependency_penalty"])
-            vision_bonus = float(decision["vision_bonus"])
             real_feasibility = float(decision["real_feasibility"])
             final_score = float(decision["final_score"])
 
@@ -224,16 +241,6 @@ def render_tabbed_report(row: dict[str, Any], *, read_only_caption: bool = False
 
             _render_score_block("Fattibilità reale", int(round(real_feasibility)))
             _render_score_block("Score finale", int(round(final_score)))
-            st.caption(
-                "Formula usata: "
-                f"fattibilità reale = {raw_feasibility} "
-                f"- penalità dipendenze ({dependency_penalty}) "
-                f"+ bonus visione ({vision_bonus}) = {real_feasibility:.1f}"
-            )
-            st.caption(
-                "Score finale = 60% fattibilità reale + 40% visione "
-                f"= {final_score:.1f}/100"
-            )
             with st.expander("Perché è uscito questo esito"):
                 st.write(
                     f"- Visione: **{vision_score}** indica il potenziale di lungo periodo."
@@ -242,18 +249,16 @@ def render_tabbed_report(row: dict[str, Any], *, read_only_caption: bool = False
                     f"- Fattibilità grezza: **{raw_feasibility}** riflette quanto è costruibile subito."
                 )
                 st.write(
-                    f"- Dipendenze esterne: **{dependency_score}** abbassano la fattibilità di **{dependency_penalty}** punti."
+                    f"- Rischio dipendenze: **{dependency_score}** segnala quanto dipendi da fattori esterni."
                 )
                 st.write(
-                    f"- Bonus visione: **+{vision_bonus}** punti se c'è direzione forte."
-                )
-                st.write(
-                    f"- Esito finale: **{yc_verdict}** su score **{final_score:.1f}**."
+                    f"- Esito mostrato: **{verdict_title}**."
                 )
     with t_analysis:
         report = row.get("analysis_report") or ""
-        if report.strip():
-            st.markdown(report)
+        clean_report = _strip_pivot_from_analysis(report)
+        if clean_report.strip():
+            st.markdown(clean_report)
         else:
             st.write("—")
     with t_pivot:
@@ -376,7 +381,24 @@ def _run_validation_for_idea(sb: Any, user_id: str, row: dict[str, Any]) -> None
         "thought_log": result["thought_log"],
         "status": "validated",
     }
-    database.update_idea(sb, str(row["id"]), user_id, fields)
+    try:
+        database.update_idea(sb, str(row["id"]), user_id, fields)
+    except Exception as e:  # noqa: BLE001
+        err = str(e).lower()
+        if (
+            "23514" in err
+            and "yc_verdict" in err
+            and ("ideas_yc_verdict_check" in err or "ideas_yc_verdict_values" in err)
+        ):
+            compat_fields = dict(fields)
+            compat_fields["yc_verdict"] = _legacy_storage_outcome(str(fields.get("yc_verdict") or "NOT NOW"))
+            database.update_idea(sb, str(row["id"]), user_id, compat_fields)
+            st.info(
+                "Compatibilità DB attiva: applica la migrazione `schema.sql` per usare i nuovi esiti "
+                "`GO/PIVOT/CAUTION/NOT NOW` anche a livello database."
+            )
+        else:
+            raise
     profile = database.fetch_profile(sb, user_id) or {}
     _notify_high_vision_alert(
         idea_title=str(row.get("title") or ""),
@@ -443,7 +465,8 @@ def page_console(sb: Any, user_id: str) -> None:
     st.divider()
     ycv = "—"
     if row.get("vision_score") is not None and row.get("feasibility_score") is not None:
-        ycv = str(_compute_row_decision(row).get("yc_verdict") or "—")
+        ycv_raw = str(_compute_row_decision(row).get("yc_verdict") or "—")
+        ycv = _ui_outcome_copy(ycv_raw)[0] if ycv_raw != "—" else "—"
     st.markdown(
         f"**Stato:** `{row['status']}` · **Esito:** `{ycv}`"
     )
@@ -746,7 +769,7 @@ def page_admin(sb: Any, profile: dict[str, Any]) -> None:
             ds = item.get("dependency_score")
             rf = item.get("real_feasibility")
             fin = item.get("final_score")
-            ycv = item.get("yc_verdict")
+            ycv = _ui_outcome_copy(str(item.get("yc_verdict") or ""))[0]
             em = item.get("author_email") or "—"
             st.write(
                 f"{title} - final {fin} (V:{vs} / F:{fs} / D:{ds} / RF:{rf}) - Esito:{ycv} - {em}"
@@ -772,9 +795,10 @@ def page_admin(sb: Any, profile: dict[str, Any]) -> None:
     ideas = database.admin_list_ideas()
     for idea in ideas:
         with st.expander(f"{idea.get('title','')} — {idea['id']}"):
+            admin_outcome = _ui_outcome_copy(str(idea.get("yc_verdict") or ""))[0]
             st.write(
                 f"user_id: `{idea.get('user_id')}` · status: `{idea.get('status')}` · "
-                f"esito: `{idea.get('yc_verdict')}` · "
+                f"esito: `{admin_outcome}` · "
                 f"vision: `{idea.get('vision_score')}` · dependency: `{idea.get('dependency_score')}` · "
                 f"real_feasibility: `{idea.get('real_feasibility')}`"
             )

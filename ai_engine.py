@@ -64,7 +64,7 @@ Restituisci SOLO JSON valido con chiavi esatte:
 "vision_score": int (0-100),
 "feasibility_score": int (0-100),
 "dependency_score": int (0-100),
-"yc_verdict": "BUILD" | "ITERATE" | "NOT NOW",
+"yc_verdict": "GO" | "PIVOT" | "CAUTION" | "NOT NOW",
 "reasoning": stringa con sezioni:
   "## Physics Check"
   "## Control Check"
@@ -427,10 +427,12 @@ def _urls_in_text(text: str) -> list[dict[str, str]]:
 
 
 def _yc_verdict_from_scores(real_feasibility: float, final_score: float) -> str:
-    if final_score >= 70 and real_feasibility >= 50:
-        return "BUILD"
-    if final_score >= 45 or real_feasibility >= 38:
-        return "ITERATE"
+    if final_score >= 72 and real_feasibility >= 55:
+        return "GO"
+    if final_score >= 58 or real_feasibility >= 48:
+        return "PIVOT"
+    if final_score >= 42 or real_feasibility >= 32:
+        return "CAUTION"
     return "NOT NOW"
 
 

@@ -33,7 +33,7 @@ create table if not exists public.ideas (
   dependency_score int,
   real_feasibility numeric(5,2),
   final_score numeric(6,2),
-  yc_verdict text check (yc_verdict is null or yc_verdict in ('BUILD', 'ITERATE', 'NOT NOW')),
+  yc_verdict text check (yc_verdict is null or yc_verdict in ('GO', 'PIVOT', 'CAUTION', 'NOT NOW')),
   thought_log jsonb,
   pivot_suggestion text,
   version int not null default 1,
@@ -171,8 +171,9 @@ alter table public.ideas add constraint ideas_final_score_range
   check (final_score is null or (final_score >= 0 and final_score <= 100));
 
 alter table public.ideas drop constraint if exists ideas_yc_verdict_values;
-alter table public.ideas add constraint ideas_yc_verdict_values
-  check (yc_verdict is null or yc_verdict in ('BUILD', 'ITERATE', 'NOT NOW'));
+alter table public.ideas drop constraint if exists ideas_yc_verdict_check;
+alter table public.ideas add constraint ideas_yc_verdict_check
+  check (yc_verdict is null or yc_verdict in ('GO', 'PIVOT', 'CAUTION', 'NOT NOW'));
 
 -- Backward compatibility for old ideas without dependency score.
 update public.ideas
@@ -208,12 +209,22 @@ where vision_score is not null
 
 update public.ideas
 set yc_verdict = case
-  when final_score >= 70 and real_feasibility >= 50 then 'BUILD'
-  when final_score >= 45 or real_feasibility >= 38 then 'ITERATE'
+  when final_score >= 72 and real_feasibility >= 55 then 'GO'
+  when final_score >= 58 or real_feasibility >= 48 then 'PIVOT'
+  when final_score >= 42 or real_feasibility >= 32 then 'CAUTION'
   else 'NOT NOW'
 end
 where yc_verdict is null
   and real_feasibility is not null;
+
+-- Normalize old verdict values to the new rubric.
+update public.ideas
+set yc_verdict = case
+  when yc_verdict = 'BUILD' then 'GO'
+  when yc_verdict = 'ITERATE' then 'PIVOT'
+  else yc_verdict
+end
+where yc_verdict in ('BUILD', 'ITERATE');
 
 create or replace function public.create_idea_with_quota(
   title text,
