@@ -133,6 +133,19 @@ def _score_color(score: int) -> str:
     return "#2e8b57"
 
 
+def _to_thirtieth(score: float | int | None) -> float:
+    raw = 0.0 if score is None else float(score)
+    clamped = max(0.0, min(100.0, raw))
+    return round(clamped * 0.3, 1)
+
+
+def _fmt_thirtieth(score: float | int | None) -> str:
+    v = _to_thirtieth(score)
+    if float(v).is_integer():
+        return f"{int(v)}/30"
+    return f"{v:.1f}/30"
+
+
 def _normalize_outcome(verdict: str) -> str:
     v = str(verdict or "").strip().upper()
     if v == "BUILD":
@@ -151,7 +164,7 @@ def _ui_outcome_copy(verdict: str) -> tuple[str, str, str]:
     if v == "PIVOT":
         return "PIVOT", "Idea valida, esecuzione da rivedere", "#FFD700"
     if v == "CAUTION":
-        return "CAUTION", "Costruibile, ma poco appetibile", "#FF7F00"
+        return "CAUTION", "Costruibile, ma molti vincoli", "#FF7F00"
     return "NOT NOW", "Poche chance di successo ora", "#DC143C"
 
 
@@ -188,7 +201,7 @@ def _strip_pivot_from_analysis(report: str) -> str:
 
 
 def _render_score_block(label: str, score: int) -> None:
-    st.metric(label, f"{score}/100")
+    st.metric(label, _fmt_thirtieth(score))
     safe_score = min(max(int(score), 0), 100)
     color = _score_color(safe_score)
     st.markdown(
@@ -235,21 +248,21 @@ def render_tabbed_report(row: dict[str, Any], *, read_only_caption: bool = False
             )
 
             c1, c2, c3 = st.columns(3)
-            c1.metric("Visione", f"{vision_score}/100")
-            c2.metric("Fattibilità grezza", f"{raw_feasibility}/100")
-            c3.metric("Rischio dipendenze", f"{dependency_score}/100")
+            c1.metric("Visione", _fmt_thirtieth(vision_score))
+            c2.metric("Fattibilità grezza", _fmt_thirtieth(raw_feasibility))
+            c3.metric("Rischio dipendenze", _fmt_thirtieth(dependency_score))
 
             _render_score_block("Fattibilità reale", int(round(real_feasibility)))
             _render_score_block("Score finale", int(round(final_score)))
             with st.expander("Perché è uscito questo esito"):
                 st.write(
-                    f"- Visione: **{vision_score}** indica il potenziale di lungo periodo."
+                    f"- Visione: **{_fmt_thirtieth(vision_score)}** indica il potenziale di lungo periodo."
                 )
                 st.write(
-                    f"- Fattibilità grezza: **{raw_feasibility}** riflette quanto è costruibile subito."
+                    f"- Fattibilità grezza: **{_fmt_thirtieth(raw_feasibility)}** riflette quanto è costruibile subito."
                 )
                 st.write(
-                    f"- Rischio dipendenze: **{dependency_score}** segnala quanto dipendi da fattori esterni."
+                    f"- Rischio dipendenze: **{_fmt_thirtieth(dependency_score)}** segnala quanto dipendi da fattori esterni."
                 )
                 st.write(
                     f"- Esito mostrato: **{verdict_title}**."
@@ -772,7 +785,9 @@ def page_admin(sb: Any, profile: dict[str, Any]) -> None:
             ycv = _ui_outcome_copy(str(item.get("yc_verdict") or ""))[0]
             em = item.get("author_email") or "—"
             st.write(
-                f"{title} - final {fin} (V:{vs} / F:{fs} / D:{ds} / RF:{rf}) - Esito:{ycv} - {em}"
+                f"{title} - final {_fmt_thirtieth(fin)} "
+                f"(V:{_fmt_thirtieth(vs)} / F:{_fmt_thirtieth(fs)} / D:{_fmt_thirtieth(ds)} / RF:{_fmt_thirtieth(rf)}) "
+                f"- Esito:{ycv} - {em}"
             )
 
     st.subheader("Utenti e idee")
@@ -799,8 +814,9 @@ def page_admin(sb: Any, profile: dict[str, Any]) -> None:
             st.write(
                 f"user_id: `{idea.get('user_id')}` · status: `{idea.get('status')}` · "
                 f"esito: `{admin_outcome}` · "
-                f"vision: `{idea.get('vision_score')}` · dependency: `{idea.get('dependency_score')}` · "
-                f"real_feasibility: `{idea.get('real_feasibility')}`"
+                f"vision: `{_fmt_thirtieth(idea.get('vision_score'))}` · "
+                f"dependency: `{_fmt_thirtieth(idea.get('dependency_score'))}` · "
+                f"real_feasibility: `{_fmt_thirtieth(idea.get('real_feasibility'))}`"
             )
             if idea.get("structured_data"):
                 st.json(idea["structured_data"])
