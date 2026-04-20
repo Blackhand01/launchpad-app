@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import time
 from collections.abc import Callable
 from datetime import datetime, timezone
 from typing import Any
@@ -26,55 +27,48 @@ Usa la ricerca web quando utile per verificare limiti tecnici, API, policy e vin
 OBIETTIVO:
 Valutare se il prodotto è costruibile davvero oggi da un team piccolo, non solo se la tecnologia esiste.
 
-FILOSOFIA DI SCORING:
-- vision_score misura quanto l'idea è ambiziosa nel lungo periodo.
-- feasibility_score misura quanto è costruibile subito, oggi, da un team piccolo senza accordi o con accordi semplici senza burocrazia.
-- Non abbassare automaticamente vision_score solo perché feasibility è bassa.
-- Se vision è alta ma feasibility è bassa, esplicita che è questa versione del prodotto a non essere costruibile ora.
+SCORING:
+- vision_score (0-100): potenziale lungo termine.
+- feasibility_score (0-100): costruibilità immediata da team piccolo.
+- dependency_score (0-100): dipendenza da terze parti.
+  0 = totalmente indipendente.
+  100 = totalmente dipendente da altri.
+
+DEPENDENCY INCLUDE:
+- infrastruttura fisica non controllata dal team
+- API private / entitlement / accessi privilegiati
+- accordi commerciali obbligatori
+- hardware posseduto da terzi
+- gatekeeper piattaforma (Apple, Google, vendor enterprise)
 
 REGOLA FONDAMENTALE:
-Distingui sempre tra:
+Non confondere "la tecnologia esiste" con "il prodotto è lanciabile dal team".
+Do NOT treat existing solutions as proof of feasibility unless the team can build them without permission.
 
-* tecnologia disponibile
-* prodotto realmente costruibile end-to-end
+HARD CONSTRAINTS (OBBLIGATORIE):
+- Se serve infrastruttura esterna: dependency_score >= 70
+- Se servono accordi commerciali: dependency_score >= 80
+- Se non può partire standalone: feasibility_score <= 40
 
-Un prodotto è considerato costruibile SOLO se il team può realizzarlo e distribuirlo senza dipendere da:
-
-* accordi commerciali con terze parti
-* accessi privilegiati o entitlement
-* infrastrutture fisiche non controllate
-* hardware proprietario di altri
-* sistemi backend chiusi
-
-Se una di queste condizioni è necessaria, considera la fattibilità LIMITATA.
-
-CONTROLLO OBBLIGATORIO:
-Nel Control Check devi sempre rispondere esplicitamente a:
-
-* Il team può costruire il prodotto senza permessi esterni?
-* Il sistema dipende da hardware già installato?
-* Esistono API pubbliche o servono integrazioni private?
-* Un attore (Apple, Google, aziende infrastrutturali) può bloccarlo?
-
-Se anche UNA sola di queste risposte è critica, abbassa fortemente il feasibility_score.
+SPEED CHECK (OBBLIGATORIO):
+Nel reasoning aggiungi SEMPRE sezione "## Speed Check" e valuta:
+- Può essere testato in < 7 giorni?
+- Il primo utente riceve valore subito?
+- Richiede deployment/integrazione lunga?
+Se è lento, abbassa feasibility_score di almeno 20 punti.
 
 OUTPUT:
-Restituisci SOLO JSON valido con chiavi:
-
+Restituisci SOLO JSON valido con chiavi esatte:
 {
 "vision_score": int (0-100),
 "feasibility_score": int (0-100),
-"sandwich_report": stringa con:
-
-```
-"## Physics Check"
-(limiti fisici reali, protocolli, vincoli tecnici)
-
-"## Control Check"
-(chi controlla davvero il sistema e se puoi accedervi)
-```
-
-"pivot_suggestion": stringa con una versione costruibile in ~14 giorni
+"dependency_score": int (0-100),
+"yc_verdict": "BUILD" | "ITERATE" | "NOT NOW",
+"reasoning": stringa con sezioni:
+  "## Physics Check"
+  "## Control Check"
+  "## Speed Check",
+"pivot_suggestion": stringa con versione costruibile in ~14 giorni
 }
 """
 
@@ -293,7 +287,7 @@ def _coerce_validation_json(
         repair_system = (
             "Converti il testo ricevuto in JSON valido. "
             "Non aggiungere nuove informazioni fattuali. "
-            "Mantieni SOLO queste chiavi: vision_score, feasibility_score, sandwich_report, pivot_suggestion. "
+            "Mantieni SOLO queste chiavi: vision_score, feasibility_score, dependency_score, yc_verdict, reasoning, pivot_suggestion. "
             "Restituisci SOLO JSON valido."
         )
         repair_user = (
@@ -318,16 +312,107 @@ def _coerce_validation_json(
             ) from repair_err
 
 
-def _parse_check_sections(sandwich: str) -> tuple[str, str]:
+def _force_validation_json_generation(
+    *,
+    client: OpenAI,
+    model: str,
+    blueprint_text: str,
+) -> str:
+    """Last LLM rescue path when Responses API returns empty/non-parseable output."""
+    rescue_system = (
+        VALIDATOR_SYSTEM_PROMPT
+        + "\n\nRegola extra: rispondi con SOLO JSON valido, senza testo extra, markdown o backticks."
+    )
+    rescue_user = (
+        "Blueprint prodotto:\n"
+        f"{blueprint_text}\n\n"
+        "Genera ora il JSON richiesto."
+    )
+
+    # Prefer chat.completions JSON mode for strictness.
+    try:
+        completion = client.chat.completions.create(
+            model=model,
+            response_format={"type": "json_object"},
+            temperature=0,
+            messages=[
+                {"role": "system", "content": rescue_system},
+                {"role": "user", "content": rescue_user},
+            ],
+        )
+        raw = completion.choices[0].message.content or ""
+        if raw.strip():
+            return raw
+    except Exception:
+        pass
+
+    # Secondary rescue via Responses API without tools.
+    try:
+        resp = client.responses.create(
+            model=model,
+            instructions=rescue_system,
+            input=rescue_user,
+            max_output_tokens=1200,
+        )
+        return _responses_output_text(resp) or ""
+    except Exception:
+        return ""
+
+
+def _safe_validation_fallback(blueprint: dict[str, Any]) -> dict[str, Any]:
+    """Deterministic fallback to avoid hard failure when model output is unrecoverable."""
+    text_blob = (
+        f"{blueprint.get('problem', '')}\n{blueprint.get('solution', '')}\n"
+        + "\n".join(str(x) for x in (blueprint.get("key_features") or []))
+    ).lower()
+    dependency = 50
+    if any(k in text_blob for k in ("ble", "hardware", "skipass", "entitlement", "api private", "accordi")):
+        dependency = 75
+    feasibility = 60 if dependency <= 50 else 35
+    vision = 65
+    yc = "BUILD" if feasibility - (dependency * 0.5) >= 60 else "ITERATE"
+    if feasibility - (dependency * 0.5) < 40:
+        yc = "NOT NOW"
+    reasoning = (
+        "## Physics Check\n"
+        "Fallback automatico: non è stato possibile ottenere JSON valido dal modello.\n\n"
+        "## Control Check\n"
+        "Valutazione conservativa applicata in base al testo del blueprint e alla dipendenza stimata.\n\n"
+        "## Speed Check\n"
+        "Assunto scenario medio: se servono integrazioni esterne la fattibilità viene ridotta."
+    )
+    return {
+        "vision_score": vision,
+        "feasibility_score": feasibility,
+        "dependency_score": dependency,
+        "yc_verdict": yc,
+        "reasoning": reasoning,
+        "pivot_suggestion": "Costruisci una MVP standalone in 14 giorni senza integrazioni bloccanti.",
+    }
+
+
+def _parse_check_sections(reasoning: str) -> tuple[str, str, str]:
     phys = ""
     ctrl = ""
-    m_p = re.search(r"##\s*Physics Check\s*(.+?)(?=##\s*Control Check\b|\Z)", sandwich, flags=re.S | re.I)
-    m_c = re.search(r"##\s*Control Check\s*(.+)", sandwich, flags=re.S | re.I)
+    speed = ""
+    m_p = re.search(
+        r"##\s*Physics Check\s*(.+?)(?=##\s*Control Check\b|##\s*Speed Check\b|\Z)",
+        reasoning,
+        flags=re.S | re.I,
+    )
+    m_c = re.search(
+        r"##\s*Control Check\s*(.+?)(?=##\s*Speed Check\b|\Z)",
+        reasoning,
+        flags=re.S | re.I,
+    )
+    m_s = re.search(r"##\s*Speed Check\s*(.+)", reasoning, flags=re.S | re.I)
     if m_p:
         phys = re.sub(r"\s+", " ", m_p.group(1).strip())
     if m_c:
         ctrl = re.sub(r"\s+", " ", m_c.group(1).strip())
-    return phys[:800], ctrl[:800]
+    if m_s:
+        speed = re.sub(r"\s+", " ", m_s.group(1).strip())
+    return phys[:800], ctrl[:800], speed[:800]
 
 
 def _urls_in_text(text: str) -> list[dict[str, str]]:
@@ -341,13 +426,48 @@ def _urls_in_text(text: str) -> list[dict[str, str]]:
     return out[:25]
 
 
-def _verdict_from_scores(vision: int, feasibility: int) -> str:
-    avg = (vision + feasibility) / 2
-    if avg >= 70:
+def _yc_verdict_from_real_feasibility(real_feasibility: float) -> str:
+    if real_feasibility < 40:
+        return "NOT NOW"
+    if real_feasibility < 60:
+        return "ITERATE"
+    return "BUILD"
+
+
+def _legacy_verdict_from_yc(yc_verdict: str) -> str:
+    if yc_verdict == "BUILD":
         return "GO"
-    if avg <= 39:
-        return "NO-GO"
-    return "CAUTION"
+    if yc_verdict == "ITERATE":
+        return "CAUTION"
+    return "NO-GO"
+
+
+def _clamp_0_100(value: int) -> int:
+    return max(0, min(100, int(value)))
+
+
+def compute_yc_decision(
+    vision_score: int,
+    feasibility_score: int,
+    dependency_score: int | None,
+) -> dict[str, float | int | str]:
+    """Deterministic YC-grade scoring used by runtime and tests."""
+    vision = _clamp_0_100(vision_score)
+    feasibility = _clamp_0_100(feasibility_score)
+    dependency = 50 if dependency_score is None else _clamp_0_100(dependency_score)
+    real_feasibility = round(max(0.0, min(100.0, feasibility - (dependency * 0.5))), 1)
+    final_score = round(max(0.0, min(100.0, vision * (real_feasibility / 100.0))), 1)
+    yc_verdict = _yc_verdict_from_real_feasibility(real_feasibility)
+    legacy_verdict = _legacy_verdict_from_yc(yc_verdict)
+    return {
+        "vision_score": vision,
+        "feasibility_score": feasibility,
+        "dependency_score": dependency,
+        "real_feasibility": real_feasibility,
+        "final_score": final_score,
+        "yc_verdict": yc_verdict,
+        "legacy_verdict": legacy_verdict,
+    }
 
 
 def run_feasibility_validation(
@@ -356,11 +476,13 @@ def run_feasibility_validation(
     status_writer: Callable[[str], None] | None = None,
 ) -> dict[str, Any]:
     """
-    Phase 2: web-backed validation. Returns dict with vision_score, feasibility_score,
-    sandwich_report, pivot_suggestion, thought_log, verdict (compatibility).
+    Phase 2: web-backed validation. Returns dict with YC scoring fields plus
+    legacy compatibility keys.
     """
     client = _openai()
     model = os.getenv("OPENAI_VALIDATION_MODEL", "gpt-5")
+    http_timeout_s = float(os.getenv("OPENAI_VALIDATION_HTTP_TIMEOUT_SECONDS", "120"))
+    stream_max_s = float(os.getenv("OPENAI_VALIDATION_STREAM_MAX_SECONDS", "90"))
     started = datetime.now(timezone.utc).isoformat()
     timeline: list[dict[str, str]] = [{"ts": started, "event": "validation_started"}]
 
@@ -385,29 +507,47 @@ def run_feasibility_validation(
     if status_writer:
         phase_msg()
 
-    stream = client.responses.create(
+    req_client = client.with_options(timeout=http_timeout_s)
+    final_text_parts: list[str] = []
+    stream = req_client.responses.create(
         model=model,
         tools=[{"type": "web_search"}],
-        tool_choice="required",
+        tool_choice="auto",
         instructions=VALIDATOR_SYSTEM_PROMPT,
         input=user_prompt,
         stream=True,
     )
-
-    final_text_parts: list[str] = []
+    started_monotonic = time.monotonic()
+    last_status_at = 0.0
     for event in stream:
+        elapsed = time.monotonic() - started_monotonic
+        if elapsed > stream_max_s:
+            now = datetime.now(timezone.utc).isoformat()
+            timeline.append({"ts": now, "event": "response.stream_timeout_break"})
+            if status_writer:
+                status_writer("Timeout ricerca web: passo al fallback rapido.")
+            close_fn = getattr(stream, "close", None)
+            if callable(close_fn):
+                close_fn()
+            break
+
         et = getattr(event, "type", "") or ""
         if et == "response.output_text.delta":
             final_text_parts.append(event.delta)
         elif et.startswith("response.web_search_call"):
             now = datetime.now(timezone.utc).isoformat()
             timeline.append({"ts": now, "event": et})
-            if status_writer and et in (
-                "response.web_search_call.searching",
-                "response.web_search_call.in_progress",
-                "response.web_search_call.completed",
+            if (
+                status_writer
+                and et in (
+                    "response.web_search_call.searching",
+                    "response.web_search_call.in_progress",
+                    "response.web_search_call.completed",
+                )
+                and (elapsed - last_status_at) >= 2.0
             ):
                 phase_msg()
+                last_status_at = elapsed
         elif et == "response.completed":
             now = datetime.now(timezone.utc).isoformat()
             timeline.append({"ts": now, "event": et})
@@ -416,14 +556,34 @@ def run_feasibility_validation(
     if not raw:
         if status_writer:
             phase_msg()
-        resp = client.responses.create(
+        resp = req_client.responses.create(
             model=model,
             tools=[{"type": "web_search"}],
-            tool_choice="required",
+            tool_choice="auto",
             instructions=VALIDATOR_SYSTEM_PROMPT,
             input=user_prompt,
+            max_output_tokens=1200,
         )
         raw = _responses_output_text(resp) or ""
+    if not raw:
+        # Last-resort fast fallback without web_search to avoid indefinite waits.
+        if status_writer:
+            status_writer("Fallback finale senza ricerca web.")
+        resp = req_client.responses.create(
+            model=model,
+            instructions=VALIDATOR_SYSTEM_PROMPT,
+            input=user_prompt,
+            max_output_tokens=1200,
+        )
+        raw = _responses_output_text(resp) or ""
+    if not raw:
+        if status_writer:
+            status_writer("Recovery JSON dedicato.")
+        raw = _force_validation_json_generation(
+            client=client,
+            model=model,
+            blueprint_text=blueprint_text,
+        )
 
     completed = datetime.now(timezone.utc).isoformat()
     timeline.append({"ts": completed, "event": "validation_completed"})
@@ -434,18 +594,39 @@ def run_feasibility_validation(
             if msg not in sent_msgs:
                 status_writer(msg)
 
-    data, was_repaired = _coerce_validation_json(raw, client=client, source_model=model)
+    used_safe_fallback = False
+    if not raw.strip():
+        data = _safe_validation_fallback(blueprint)
+        was_repaired = False
+        used_safe_fallback = True
+    else:
+        try:
+            data, was_repaired = _coerce_validation_json(raw, client=client, source_model=model)
+        except RuntimeError:
+            data = _safe_validation_fallback(blueprint)
+            was_repaired = False
+            used_safe_fallback = True
 
-    vision = int(data.get("vision_score", 0))
-    feasibility = int(data.get("feasibility_score", 0))
-    vision = max(0, min(100, vision))
-    feasibility = max(0, min(100, feasibility))
-    sandwich = str(data.get("sandwich_report", "")).strip()
+    decision = compute_yc_decision(
+        int(data.get("vision_score", 0)),
+        int(data.get("feasibility_score", 0)),
+        data.get("dependency_score"),
+    )
+    vision = int(decision["vision_score"])
+    feasibility = int(decision["feasibility_score"])
+    dependency = int(decision["dependency_score"])
+    real_feasibility = float(decision["real_feasibility"])
+    final_score = float(decision["final_score"])
+    yc_verdict = str(decision["yc_verdict"])
+    legacy_verdict = str(decision["legacy_verdict"])
+
+    reasoning = str(data.get("reasoning") or data.get("sandwich_report") or "").strip()
     pivot = str(data.get("pivot_suggestion", "")).strip()
-    if not sandwich:
-        raise RuntimeError("Validazione: sandwich_report vuoto.")
-    phys_summary, ctrl_summary = _parse_check_sections(sandwich)
-    sources = _urls_in_text(sandwich + "\n" + raw)
+    if not reasoning:
+        raise RuntimeError("Validazione: reasoning vuoto.")
+    phys_summary, ctrl_summary, speed_summary = _parse_check_sections(reasoning)
+    sources = _urls_in_text(reasoning + "\n" + raw)
+    model_yc_verdict = str(data.get("yc_verdict", "")).strip().upper()
 
     thought_log: dict[str, Any] = {
         "run": {
@@ -453,21 +634,45 @@ def run_feasibility_validation(
             "started_at": started,
             "completed_at": completed,
             "json_repaired": was_repaired,
+            "safe_fallback_used": used_safe_fallback,
         },
-        "check_summaries": {"physics_check": phys_summary, "control_check": ctrl_summary},
+        "check_summaries": {
+            "physics_check": phys_summary,
+            "control_check": ctrl_summary,
+            "speed_check": speed_summary,
+        },
         "source_links": sources,
+        "raw_scores": {
+            "vision_score": vision,
+            "feasibility_score": feasibility,
+            "dependency_score": dependency,
+        },
+        "adjusted_scores": {
+            "real_feasibility": real_feasibility,
+            "final_score": final_score,
+        },
+        "verdicts": {
+            "yc_verdict": yc_verdict,
+            "legacy_verdict": legacy_verdict,
+            "model_yc_verdict": model_yc_verdict,
+            "model_verdict_matches_engine": model_yc_verdict == yc_verdict if model_yc_verdict else None,
+        },
+        "blueprint_snapshot": blueprint,
         "timeline": timeline[-40:],
     }
-
-    verdict = _verdict_from_scores(vision, feasibility)
 
     return {
         "vision_score": vision,
         "feasibility_score": feasibility,
-        "sandwich_report": sandwich,
+        "dependency_score": dependency,
+        "real_feasibility": real_feasibility,
+        "final_score": final_score,
+        "yc_verdict": yc_verdict,
+        "reasoning": reasoning,
+        "sandwich_report": reasoning,  # backward compatibility for existing UI calls
         "pivot_suggestion": pivot,
         "thought_log": thought_log,
-        "verdict": verdict,
+        "verdict": legacy_verdict,
     }
 
 

@@ -159,12 +159,15 @@ def admin_reset_ideas_this_week(client: Client, target_user_id: str | None = Non
 
 
 def admin_hall_of_fame() -> list[dict[str, Any]]:
-    """Validated ideas sorted by avg(vision_score, feasibility_score), includes author email."""
+    """Validated ideas sorted by YC final_score, includes author email."""
     client = service_supabase()
     try:
         res = (
             client.table("ideas")
-            .select("id, title, vision_score, feasibility_score, user_id")
+            .select(
+                "id, title, vision_score, feasibility_score, dependency_score, "
+                "real_feasibility, final_score, yc_verdict, user_id"
+            )
             .eq("status", "validated")
             .not_.is_("vision_score", "null")
             .not_.is_("feasibility_score", "null")
@@ -172,22 +175,65 @@ def admin_hall_of_fame() -> list[dict[str, Any]]:
         )
         rows = res.data or []
     except Exception as e:  # noqa: BLE001
-        # Likely the DB hasn't been migrated yet (missing v2.5 columns).
+        # Likely the DB hasn't been migrated yet (missing scoring columns).
         msg = str(e)
-        if "vision_score" in msg and "does not exist" in msg:
-            return []
+        if "does not exist" in msg:
+            # Backward-compatible fallback for older DB schema.
+            res = (
+                client.table("ideas")
+                .select("id, title, vision_score, feasibility_score, user_id")
+                .eq("status", "validated")
+                .not_.is_("vision_score", "null")
+                .not_.is_("feasibility_score", "null")
+                .execute()
+            )
+            rows = res.data or []
+            for r in rows:
+                v = int(r.get("vision_score") or 0)
+                f = int(r.get("feasibility_score") or 0)
+                d = 50
+                rf = round(max(0.0, min(100.0, f - (d * 0.5))), 1)
+                final = round(max(0.0, min(100.0, v * (rf / 100.0))), 1)
+                r["dependency_score"] = d
+                r["real_feasibility"] = rf
+                r["final_score"] = final
+                r["yc_verdict"] = "BUILD" if rf >= 60 else ("ITERATE" if rf >= 40 else "NOT NOW")
+                r["avg_score"] = round((v + f) / 2, 1)
+            profiles = {p["id"]: p for p in admin_list_profiles()}
+            for r in rows:
+                r["author_email"] = profiles.get(r.get("user_id"), {}).get("email")
+            rows.sort(
+                key=lambda r: (
+                    float(r.get("final_score") or 0),
+                    int(r.get("vision_score") or 0),
+                    float(r.get("real_feasibility") or 0),
+                ),
+                reverse=True,
+            )
+            return rows
         raise
     profiles = {p["id"]: p for p in admin_list_profiles()}
     for r in rows:
         r["author_email"] = profiles.get(r.get("user_id"), {}).get("email")
         v = int(r.get("vision_score") or 0)
         f = int(r.get("feasibility_score") or 0)
+        d_raw = r.get("dependency_score")
+        d = 50 if d_raw is None else int(d_raw)
+        rf_raw = r.get("real_feasibility")
+        rf = round(max(0.0, min(100.0, f - (d * 0.5))), 1) if rf_raw is None else round(float(rf_raw), 1)
+        final_raw = r.get("final_score")
+        final = round(max(0.0, min(100.0, v * (rf / 100.0))), 1) if final_raw is None else round(float(final_raw), 1)
+        r["dependency_score"] = d
+        r["real_feasibility"] = rf
+        r["final_score"] = final
+        if not r.get("yc_verdict"):
+            r["yc_verdict"] = "BUILD" if rf >= 60 else ("ITERATE" if rf >= 40 else "NOT NOW")
         r["avg_score"] = round((v + f) / 2, 1)
     rows.sort(
         key=lambda r: (
-            float(r.get("avg_score") or 0),
+            float(r.get("final_score") or 0),
             int(r.get("vision_score") or 0),
-            int(r.get("feasibility_score") or 0),
+            float(r.get("real_feasibility") or 0),
         ),
         reverse=True,
     )

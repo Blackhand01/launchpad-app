@@ -31,6 +31,10 @@ create table if not exists public.ideas (
   pivot_used boolean not null default false,
   vision_score int,
   feasibility_score int,
+  dependency_score int,
+  real_feasibility numeric(5,2),
+  final_score numeric(6,2),
+  yc_verdict text check (yc_verdict is null or yc_verdict in ('BUILD', 'ITERATE', 'NOT NOW')),
   thought_log jsonb,
   pivot_suggestion text,
   version int not null default 1,
@@ -39,6 +43,15 @@ create table if not exists public.ideas (
   constraint ideas_vision_score_range check (vision_score is null or (vision_score >= 0 and vision_score <= 100)),
   constraint ideas_feasibility_score_range check (
     feasibility_score is null or (feasibility_score >= 0 and feasibility_score <= 100)
+  ),
+  constraint ideas_dependency_score_range check (
+    dependency_score is null or (dependency_score >= 0 and dependency_score <= 100)
+  ),
+  constraint ideas_real_feasibility_range check (
+    real_feasibility is null or (real_feasibility >= 0 and real_feasibility <= 100)
+  ),
+  constraint ideas_final_score_range check (
+    final_score is null or (final_score >= 0 and final_score <= 100)
   )
 );
 
@@ -130,6 +143,10 @@ alter table public.profiles add column if not exists ideas_this_week int not nul
 
 alter table public.ideas add column if not exists vision_score int;
 alter table public.ideas add column if not exists feasibility_score int;
+alter table public.ideas add column if not exists dependency_score int;
+alter table public.ideas add column if not exists real_feasibility numeric(5,2);
+alter table public.ideas add column if not exists final_score numeric(6,2);
+alter table public.ideas add column if not exists yc_verdict text;
 alter table public.ideas add column if not exists thought_log jsonb;
 alter table public.ideas add column if not exists pivot_suggestion text;
 
@@ -140,6 +157,49 @@ alter table public.ideas add constraint ideas_vision_score_range
 alter table public.ideas drop constraint if exists ideas_feasibility_score_range;
 alter table public.ideas add constraint ideas_feasibility_score_range
   check (feasibility_score is null or (feasibility_score >= 0 and feasibility_score <= 100));
+
+alter table public.ideas drop constraint if exists ideas_dependency_score_range;
+alter table public.ideas add constraint ideas_dependency_score_range
+  check (dependency_score is null or (dependency_score >= 0 and dependency_score <= 100));
+
+alter table public.ideas drop constraint if exists ideas_real_feasibility_range;
+alter table public.ideas add constraint ideas_real_feasibility_range
+  check (real_feasibility is null or (real_feasibility >= 0 and real_feasibility <= 100));
+
+alter table public.ideas drop constraint if exists ideas_final_score_range;
+alter table public.ideas add constraint ideas_final_score_range
+  check (final_score is null or (final_score >= 0 and final_score <= 100));
+
+alter table public.ideas drop constraint if exists ideas_yc_verdict_values;
+alter table public.ideas add constraint ideas_yc_verdict_values
+  check (yc_verdict is null or yc_verdict in ('BUILD', 'ITERATE', 'NOT NOW'));
+
+-- Backward compatibility for old ideas without dependency score.
+update public.ideas
+set dependency_score = 50
+where dependency_score is null
+  and feasibility_score is not null;
+
+update public.ideas
+set real_feasibility = greatest(0, least(100, feasibility_score - (dependency_score * 0.5)))
+where feasibility_score is not null
+  and dependency_score is not null
+  and real_feasibility is null;
+
+update public.ideas
+set final_score = greatest(0, least(100, vision_score * (real_feasibility / 100.0)))
+where vision_score is not null
+  and real_feasibility is not null
+  and final_score is null;
+
+update public.ideas
+set yc_verdict = case
+  when real_feasibility < 40 then 'NOT NOW'
+  when real_feasibility < 60 then 'ITERATE'
+  else 'BUILD'
+end
+where yc_verdict is null
+  and real_feasibility is not null;
 
 create or replace function public.create_idea_with_quota(
   title text,

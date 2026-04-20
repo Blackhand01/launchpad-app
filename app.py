@@ -139,6 +139,33 @@ def _score_color(score: int) -> str:
     return "#2e8b57"
 
 
+def _yc_verdict_color(verdict: str) -> str:
+    v = str(verdict or "").strip().upper()
+    if v == "BUILD":
+        return "#2e8b57"
+    if v == "ITERATE":
+        return "#f6c343"
+    return "#e84a5f"
+
+
+def _compute_row_decision(row: dict[str, Any]) -> dict[str, float | int | str]:
+    vision = int(row.get("vision_score") or 0)
+    feasibility = int(row.get("feasibility_score") or 0)
+    dependency_raw = row.get("dependency_score")
+    dependency = 50 if dependency_raw is None else int(dependency_raw)
+    computed = ai_engine.compute_yc_decision(vision, feasibility, dependency)
+    real_raw = row.get("real_feasibility")
+    final_raw = row.get("final_score")
+    yc_raw = (row.get("yc_verdict") or "").strip()
+    if real_raw is not None:
+        computed["real_feasibility"] = round(float(real_raw), 1)
+    if final_raw is not None:
+        computed["final_score"] = round(float(final_raw), 1)
+    if yc_raw in {"BUILD", "ITERATE", "NOT NOW"}:
+        computed["yc_verdict"] = yc_raw
+    return computed
+
+
 def _render_score_block(label: str, score: int) -> None:
     st.metric(label, f"{score}/100")
     safe_score = min(max(int(score), 0), 100)
@@ -158,15 +185,34 @@ def render_tabbed_report(row: dict[str, Any], *, read_only_caption: bool = False
     """Tabs: score, analysis (sandwich), pivot."""
     if read_only_caption:
         st.caption("Sola lettura · nessuna modifica dopo la validazione")
-    t_score, t_analysis, t_pivot = st.tabs(["The Score", "The Analysis", "The Pivot"])
+    t_score, t_analysis, t_pivot = st.tabs(["The Decision", "The Analysis", "The Pivot"])
     vision = row.get("vision_score")
     feas = row.get("feasibility_score")
     with t_score:
         if vision is None or feas is None:
             st.info("Punteggi non ancora disponibili per questa idea.")
         else:
-            _render_score_block("Vision", int(vision))
-            _render_score_block("Feasibility", int(feas))
+            decision = _compute_row_decision(row)
+            yc_verdict = str(decision["yc_verdict"])
+            verdict_color = _yc_verdict_color(yc_verdict)
+            _render_score_block("Vision (long-term potential)", int(decision["vision_score"]))
+            _render_score_block("Real Feasibility", int(round(float(decision["real_feasibility"]))))
+            st.caption(
+                f"Raw feasibility: {decision['feasibility_score']}/100 · "
+                f"Dependency: {decision['dependency_score']}/100 · "
+                f"Final score: {decision['final_score']}/100"
+            )
+            st.markdown(
+                (
+                    "<div style='margin-top:10px;padding:14px 16px;border-radius:12px;"
+                    "border:1px solid #d9dde3;background:#fbfcfe;'>"
+                    "<div style='font-size:0.85rem;color:#4a5568;'>YC Verdict</div>"
+                    f"<div style='font-size:2.2rem;font-weight:800;line-height:1.1;color:{verdict_color};'>"
+                    f"{html.escape(yc_verdict)}</div>"
+                    "</div>"
+                ),
+                unsafe_allow_html=True,
+            )
     with t_analysis:
         report = row.get("analysis_report") or ""
         if report.strip():
@@ -272,12 +318,16 @@ def _run_validation_for_idea(sb: Any, user_id: str, row: dict[str, Any]) -> None
         )
 
     fields = {
-        "analysis_report": result["sandwich_report"],
+        "analysis_report": result["reasoning"],
         "vision_score": result["vision_score"],
         "feasibility_score": result["feasibility_score"],
+        "dependency_score": result["dependency_score"],
+        "real_feasibility": result["real_feasibility"],
+        "final_score": result["final_score"],
+        "yc_verdict": result["yc_verdict"],
         "pivot_suggestion": result["pivot_suggestion"],
         "thought_log": result["thought_log"],
-        "verdict": result["verdict"],
+        "verdict": result["verdict"],  # legacy compatibility
         "status": "validated",
     }
     database.update_idea(sb, str(row["id"]), user_id, fields)
@@ -310,7 +360,13 @@ def page_console(sb: Any, user_id: str) -> None:
         return
 
     st.divider()
-    st.markdown(f"**Stato:** `{row['status']}` · **Verdetto (legacy):** `{row.get('verdict') or '—'}`")
+    ycv = row.get("yc_verdict")
+    if not ycv and row.get("vision_score") is not None and row.get("feasibility_score") is not None:
+        ycv = _compute_row_decision(row).get("yc_verdict")
+    st.markdown(
+        f"**Stato:** `{row['status']}` · **YC Verdict:** `{ycv or '—'}` · "
+        f"**Verdetto (legacy):** `{row.get('verdict') or '—'}`"
+    )
 
     if row.get("status") == "raw" and not row.get("structured_data"):
         st.info("Questa idea non ha ancora un blueprint. Aprila da **Nuova idea** per generarlo.")
@@ -596,7 +652,7 @@ def page_admin(sb: Any, profile: dict[str, Any]) -> None:
     except Exception as e:  # noqa: BLE001
         st.warning(
             "Hall of Fame non disponibile: probabilmente non hai ancora applicato la migrazione DB v2.5 "
-            "(colonne `vision_score`, `feasibility_score`, ecc.)."
+            "(colonne scoring idea: `vision_score`, `dependency_score`, `real_feasibility`, ecc.)."
         )
         st.code(str(e))
         hof = []
@@ -607,9 +663,14 @@ def page_admin(sb: Any, profile: dict[str, Any]) -> None:
             title = item.get("title") or "Senza titolo"
             vs = item.get("vision_score")
             fs = item.get("feasibility_score")
-            avg = item.get("avg_score")
+            ds = item.get("dependency_score")
+            rf = item.get("real_feasibility")
+            fin = item.get("final_score")
+            ycv = item.get("yc_verdict")
             em = item.get("author_email") or "—"
-            st.write(f"{title} - avg {avg} (V:{vs} / F:{fs}) - {em}")
+            st.write(
+                f"{title} - final {fin} (V:{vs} / F:{fs} / D:{ds} / RF:{rf}) - YC:{ycv} - {em}"
+            )
 
     st.subheader("Utenti e idee")
     for p in profiles:
@@ -633,7 +694,9 @@ def page_admin(sb: Any, profile: dict[str, Any]) -> None:
         with st.expander(f"{idea.get('title','')} — {idea['id']}"):
             st.write(
                 f"user_id: `{idea.get('user_id')}` · status: `{idea.get('status')}` · "
-                f"verdict: `{idea.get('verdict')}` · vision: `{idea.get('vision_score')}`"
+                f"yc_verdict: `{idea.get('yc_verdict')}` · legacy: `{idea.get('verdict')}` · "
+                f"vision: `{idea.get('vision_score')}` · dependency: `{idea.get('dependency_score')}` · "
+                f"real_feasibility: `{idea.get('real_feasibility')}`"
             )
             if idea.get("structured_data"):
                 st.json(idea["structured_data"])
